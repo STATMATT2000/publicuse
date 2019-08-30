@@ -1,0 +1,149 @@
+---
+title: "Business Employment Dynamics"
+author: "Matthew Corrigan"
+date: "August 29, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Business Employment Dyanamics(BD)
+The following is a definition of:  BUSINESS EMPLOYMENT DYNAMICS(BD)
+<https://download.bls.gov/pub/time.series/bd/bd.txt>
+Program Description:  The Business Employment Dynamics statistics track changes
+in employment at the establishment level, revealing the dynamics underlying net
+changes in employment.
+
+Summary Data Available: The new quarterly data on Business Employment Dynamics are
+derived from the Covered Employment and Wages Program, also known as the ES-202
+program.  This program is the quarterly census of all establishments under State
+unemployment insurance programs, representing about 98 percent of employment on
+nonfarm payrolls.  The data include all establishments subject to the State
+unemployment insurance (UI) laws and Federal agencies subject to the Unemployment
+Compensation for Federal Employees (UCFE) program.  Major exclusions from UI
+coverage are the self-employed workers, religious organizations, most agricultural
+workers on small farms, members of the Armed Forces and certain small nonprofit
+organizations.
+
+The Business Employment Dynamics totals require that establishment data be linked
+across quarters.  This longitudinal aspect of the data allows the tracking of when
+establishments open, close, and expand or contract their employees.  There are
+four types of job flows: employment gains at opening establishments, employment
+expansions at existing establishments, employment losses at closing establishments,
+and employment contractions at existing establishments.  Increases in employment at
+opening and expanding establishments sum to measure job gains.  Declines in
+employment at closing and contracting establishments sum to measure job losses.
+The more traditional measures of a net change in the employment is the difference
+between the number of jobs gains and the number of jobs lost.
+
+Currently, job flow estimates are available at levels and as rates for the private
+sector.  The rates measure gross job gains and losses and their components as a 
+percentage of the average of the previous and current quarter employment.  The
+first release of the Business Employment Dynamics statistics cover the period from
+September 1992 to December 2002.  Estimates are available with and without
+seasonal adjustments.  Seasonal adjustment is run concurrently and models are
+updated annually.
+
+```{r libsetup, message=FALSE}
+library(data.table)
+library(tidyverse)
+```
+
+```{r,  mesage=FALSE}
+bls <- "https://download.bls.gov/pub/time.series/"
+pgm <- "bd/bd."
+poc <- fread(paste0(bls,pgm,"contacts"), showProgress=FALSE)
+poc[2,]
+rm(poc)
+```
+## Dataset Info
+Almost everything to be known about the datasets are located at
+<https://download.bls.gov/pub/time.series/bd/bd.txt>
+
+### Data Files
+```{r data}
+# bd.data.0.Current		  -  All current year-to-date data
+current_data <-  fread(paste0(bls, pgm, "data.0.Current"), showProgress = FALSE)
+# bd.data.1.AllItems		  -  All items
+all_items <-  fread(paste0(bls, pgm, "data.1.AllItems"), showProgress = FALSE)
+```
+
+### Mapping Files
+```{r mapping_files}
+# bd.county			  -  County codes		mapping file 
+county_codes <-  fread(paste0(bls, pgm, "county"), showProgress = FALSE)
+# bd.dataclass			  -  Data class codes		mapping file
+dataclass_codes <-  fread(paste0(bls, pgm, "dataclass"), showProgress = FALSE)
+# bd.dataelement			  -  Data element codes		mapping file
+dataelement_codes <-  fread(paste0(bls, pgm, "dataelement"), showProgress = FALSE)
+# bd.footnote			  -  Footnote codes
+footnote_codes <-  fread(paste0(bls, pgm, "footnote"), showProgress = FALSE)
+# bd.industry			  -  Industry codes		mapping file
+industry_codes <-  fread(paste0(bls, pgm, "industry"), showProgress = FALSE)
+# bd.msa				  -  MSA codes			mapping file
+msa_codes <-  fread(paste0(bls, pgm, "msa"), showProgress = FALSE)
+# bd.ownership			  -  Ownership codes		mapping file
+ownership_codes <-  fread(paste0(bls, pgm, "ownership"), showProgress = FALSE)
+# bd.periodicity			  -  Periodicity codes		mapping file
+periodicity_codes <-  fread(paste0(bls, pgm, "periodicity"), showProgress = FALSE)
+# bd.ratelevel			  -  Rate level codes 		mapping file
+ratelevel_codes <-  fread(paste0(bls, pgm, "ratelevel"), showProgress = FALSE)
+# bd.sizeclass			  -  Sizeclass codes		mapping file
+sizeclass_codes <-  fread(paste0(bls, pgm, "sizeclass"), showProgress = FALSE)
+# bd.state			  -  State codes		mapping file
+state_codes <-  fread(paste0(bls, pgm, "state"), showProgress = FALSE)
+# bd.unitanalysis			  -  Unitanalysis codes		mapping file
+unitanalysis_codes <-  fread(paste0(bls, pgm, "unitanalysis"), showProgress = FALSE)
+```
+
+### Series File
+```{r series}
+# bd.series			  -  All series and their beginning and end dates
+series_id <-  fread(paste0(bls, pgm, "series"), showProgress = FALSE)
+```
+
+#### Join Mapping Files
+What I am doing here is joining all the mapping files to the series id, This is an inneficient way to store the file, but now I can clean up my environment wich is more imortant to me. 
+The series_full contains column series_id, this is the column used to map to the data. Taking the information we are adding allows us to map the subset that we want to the without creating a huge file.
+```{r join_map}
+series_full <- series_id %>% 
+  left_join(county_codes,by="county_code") %>%
+  left_join(dataclass_codes,by="dataclass_code") %>%
+  left_join(dataelement_codes,by="dataelement_code") %>%
+  left_join(footnote_codes,by=c("footnote_codes" = "footnote_code")) %>%
+  left_join(industry_codes,by="industry_code") %>%
+  left_join(msa_codes,by="msa_code") %>%
+  left_join(ownership_codes,by="ownership_code") %>%  
+  left_join(periodicity_codes,by="periodicity_code") %>%  
+  left_join(ratelevel_codes,by="ratelevel_code") %>%
+  left_join(sizeclass_codes,by="sizeclass_code") %>%  
+  left_join(state_codes,by="state_code") %>%  
+  left_join(unitanalysis_codes,by="unitanalysis_code")
+rm(list=setdiff(ls(),c("bls", "series_full", "pgm", "current_data", "all_items")))
+```
+
+
+## Pick the Region of Interest
+It sems that the lowest level of detail here is the state
+```{r msa}
+msa_info <- series_full %>% 
+  filter(grepl("Kansas", state_name, ignore.case = TRUE),
+         state_code == 20,                   # Kansas
+         periodicity_code == "A",            # Annual
+         dataelement_code == 1,              # Employment
+         ratelevel_code == "L")              # Gross not percentate
+```
+
+## Merge the region with the data
+```{r}
+msa_dat <- current_data %>% 
+  inner_join(msa_info, by="series_id")
+```
+
+```{r}
+msa_dat %>% 
+  filter(dataclass_code == 1, period=="Q04") %>%
+  ggplot(aes(x=year,y=value)) + geom_line() 
+```
