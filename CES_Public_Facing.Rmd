@@ -1,0 +1,247 @@
+---
+title: "CES_Data"
+author: "Matthew Corrigan"
+date: "January 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Obtain Publicly available CES data
+[https://www.bls.gov/ces/home.htm#data](https://www.bls.gov/ces/home.htm#data)
+At the bottom of this website there is a link for Flat text files. This is where I obtained the public data.
+[https://download.bls.gov/pub/time.series/ce/](https://download.bls.gov/pub/time.series/ce/)
+My intention is to work through the flat files to see what is available. 
+
+```{r lib-setup, message=FALSE}
+library(data.table)
+library(dplyr)
+library(reshape2)
+library(stringr)
+```
+
+The first thing is point of contacts for questions about this dataset. 
+```{r,  mesage=FALSE}
+poc <- fread("https://download.bls.gov/pub/time.series/ce/ce.contacts", showProgress=FALSE)
+poc[c(3,5:8),]
+rm(poc)
+```
+Almost everything to be known about the datasets are located at [https://download.bls.gov/pub/time.series/ce/ce.txt](https://download.bls.gov/pub/time.series/ce/ce.txt)
+
+# Capture the data
+
+## Part 1. Establish initial data set to build upon.
+This is downloading All CES Series, this establishes a baseline for downloading the additional information.
+I identify a source since their may be cases where data appear on the master, but not elsewhere and the other way around.
+
+```{r AllCESSeries,  cache=TRUE, message = FALSE}
+series_master <- fread('https://download.bls.gov/pub/time.series/ce/ce.data.0.AllCESSeries', showProgress = FALSE)
+series_master[,source:="0.AllCESSeries"]
+series_master<- unique(series_master)
+series_master[,dup_count:=.N, by=.(series_id, year, period, value, footnote_codes, source)]
+names(series_master)
+series_master[,.N]
+```
+
+## Part 2. Create a list of datasets to work through.
+This is downloading the list of datasets available. From there it will needs to be cleaned so I can use the information to create links.
+```{r datasets-avail}
+datasets_avail <- fread('https://download.bls.gov/pub/time.series/ce/', showProgress = FALSE)
+datasets_avail <- gsub(".*?>", "",
+     gsub("<.*?>", "", 
+          grep("/pub/time.series/ce/",datasets_avail,value = TRUE)
+          )
+     )
+names(datasets_avail)=NULL
+s_m <- as.data.table(colsplit(string=datasets_avail, 
+                              pattern = "\\.", 
+                              names = c("CES_survey", "data", "supersector_datatype", 
+                                        "file_description", "data_type")))
+s_m[,url:=paste0("https://download.bls.gov/pub/time.series/ce/", datasets_avail)]
+s_m[,dataset_name:=datasets_avail]
+datasets <- s_m
+rm(s_m, datasets_avail)
+names(datasets)
+datasets[,.N]
+```
+
+We have already read in line one (AllCESSeries), next is to read the remaining data. So we will cleanup the **datasets** and call its subset **series** for the list of datasets we want to work with for download.
+```{r dataset-cleanup}
+series.0<- datasets[supersector_datatype!=""] 
+series.0[, supersector:=str_extract(series.0[,supersector_datatype],"[[:digit:]]+")]
+series.0[, datatype:=str_extract(series.0[,supersector_datatype],"[a-z]")]
+series.0[,supersector_datatype:=NULL]
+series.0[,.N]
+```
+
+```{r filename-parts}
+series.0[,.(dataset_name)]
+# Fix Goog
+series.0[dataset_name=="ce.data.Goog", datatype:=NA]
+```
+
+## Part 3. Handle duplication across categories.
+One of the issues I want to handle is to determine duplication of data. AllCESSeries is supposed to contain the remaining `r series.0[,.N]-1` datasets.  I want to caputure where this occurs and what might not be included in either AllCES or another duplicate subset.
+
+```{r, results = "hide", cache=TRUE, mesage=FALSE}
+for(i in 2:series.0[,.N]){
+temp_capture <- fread(series.0[i,url], showProgress = FALSE)
+temp_capture[,source:=sub("ce.data.", "", series.0[i, dataset_name])]
+temp_capture <- unique(temp_capture)
+series_master <- rbindlist(list(series_master[,.(series_id, year, period, value, footnote_codes, source)],
+                               temp_capture[,.(series_id, year, period, value, footnote_codes, source)]))
+rm(temp_capture)
+}
+```
+
+Identify duplicates and list the sources for duplicates
+[Resource for sourceL:=](http://brooksandrew.github.io/simpleblog/articles/advanced-data-table/)
+```{r}
+# Checking for duplicates where source is not a concern
+series_master[,dup_count:=.N, by =.(series_id, year, period, value, footnote_codes)][order(-dup_count)]
+# Aggregating source by duplicates
+series_master[,sourceL:=.(list(unique(source))), by=.(series_id, year, period, value, footnote_codes)]
+# access elements from column of list
+series_master[,source1:=sapply(sourceL,`[`,1)]
+series_master[,source2:=sapply(sourceL,`[`,2)]
+series_master[,source3:=sapply(sourceL,`[`,3)]
+series_master[,source4:=sapply(sourceL,`[`,4)]
+# Choosing a unique subset where the list of source information is preserved
+series_master <- unique(series_master[,.(series_id, year, period, value, footnote_codes,
+                                         dup_count, source1, source2, source3, source4)])
+series_master <- series_master[order(series_id, year, period)]
+table(series_master$source1)
+series_master[,.N]
+```
+
+It is important to note that the dataset **0.AllCESSeries** did contain everything in the addional datasets
+```{r}
+series_master[,.N, by="source1"]
+data.table(source = c(series_master$source1, series_master$source2, series_master$source3, series_master$source4))[!is.na(source)][,.N, by=source]
+```
+
+
+# Part 4 Establish mapping files
+
+Add on datatype info this is a data_type_code mapping file
+```{r datatype, cache=TRUE, mesage=FALSE}
+datatype <- fread('https://download.bls.gov/pub/time.series/ce/ce.datatype', colClasses = c("character", "character"), showProgress=FALSE)
+setkey(datatype, data_type_code)
+datatype[1:3]
+```
+
+Add on footnote info this is a footnote code mapping file
+```{r footnote, cache=TRUE, mesage=FALSE}
+footnote <- fread('https://download.bls.gov/pub/time.series/ce/ce.footnote', colClasses = rep("character",2), showProgress=FALSE)
+names(footnote) <- c("footnote_codes", "footnote_text")
+footnote[,footnote_codes := tolower(footnote_codes)]
+footnote[footnote_codes=="i", footnote_text:="Seasonally Adjusted Independently"]
+setkey(footnote, footnote_codes)
+footnote
+```
+
+Add on industry info this contains the industry codes mapping file
+```{r industry, cache=TRUE, mesage=FALSE}
+industry <- fread('https://download.bls.gov/pub/time.series/ce/ce.industry', colClasses = rep("character",7), showProgress=FALSE)
+setkey(industry, industry_code)
+industry[1:5]
+```
+
+Add on period codes mapping file
+```{r period, cache=TRUE, mesage=FALSE}
+period <- fread('https://download.bls.gov/pub/time.series/ce/ce.period', colClasses = rep("character",3), header = FALSE, showProgress=FALSE)
+names(period) <- c("period", "MON", "Month")
+setkey(period, period)
+period
+```
+
+Add on seasonal adjustment codes mapping file
+```{r seasonal, cache=TRUE, mesage=FALSE}
+seasonal <- fread('https://download.bls.gov/pub/time.series/ce/ce.seasonal',colClasses = rep("character", 2), showProgress=FALSE)
+setkey(seasonal, seasonal_code)
+seasonal
+```
+
+Add on all available series numbers with series titles
+```{r series, cache=TRUE, mesage=FALSE}
+series <- fread('https://download.bls.gov/pub/time.series/ce/ce.series', 
+colClasses = c(rep("character", 7), "numeric", "character", "numeric", "character"), showProgress=FALSE)
+series[1:5]
+```
+
+Add on supersector codes
+```{r supersector, cache=TRUE, mesage=FALSE}
+supersector <- fread('https://download.bls.gov/pub/time.series/ce/ce.supersector',colClasses = rep("character", 2), showProgress=FALSE)
+setkey(supersector, supersector_code)
+supersector[1:5]
+```
+
+# Part 5 Merge mapping files
+What is next is merging the mapping files together to capture the maping information.
+[Stopped in section 3 at](https://download.bls.gov/pub/time.series/ce/ce.txt). 
+
+There are a few ways to do these merges, but I am looking to dplyr to make things easier to understand. SQL would be another good option, but it isn't always easy for someone else to understand. 
+[join concept reference](https://stackoverflow.com/questions/5706437/whats-the-difference-between-inner-join-left-join-right-join-and-full-join)
+[Data Table merge reference](https://rstudio-pubs-static.s3.amazonaws.com/52230_5ae0d25125b544caab32f75f0360e775.html)
+[Data Table merge different column names](https://stackoverflow.com/questions/29865512/how-to-merge-two-data-table-by-different-column-names)
+[dplyr left join merge reference](https://stackoverflow.com/questions/21888910/how-to-specify-names-of-columns-for-x-and-y-when-joining-in-dplyr)
+
+
+```{r}
+# Replacing supersector_code
+leftCols <- sub("supersector_code", "supersector_name", colnames(series))
+series_map <- left_join(series, supersector, by = "supersector_code") %>% 
+  select(leftCols) %>% 
+  as.data.table()
+
+# Merge and keeping Industry Code and associated details
+colOrder <- unique(c(colnames(series_map), colnames(industry)))
+series_map <- left_join(series_map, industry, by = "industry_code") %>% 
+  select(colOrder) %>% 
+  as.data.table()
+
+# Replacing data_type_code
+leftCols <- sub("data_type_code", "data_type_text", colnames(series_map))
+series_map <- left_join(series_map, datatype, by = "data_type_code") %>% 
+  select(leftCols) %>% 
+  as.data.table()
+
+# Replacing seasonal_code
+leftCols <- sub("seasonal", "seasonal_text", colnames(series_map))
+series_map <- left_join(series_map, seasonal, by = c("seasonal" = "seasonal_code")) %>% 
+  select(leftCols) %>% 
+  as.data.table()
+
+# Replacing footnote_codes
+leftCols <- sub("footnote_codes", "footnote_text", colnames(series_map))
+series_map[,footnote_codes := tolower(footnote_codes)]
+series_map <- left_join(series_map, footnote, by = "footnote_codes") %>% 
+  select(leftCols) %>% 
+  as.data.table()
+
+# --or with dplyr--
+# series_map <- left_join(series, supersector, by = "supersector_code") %>% 
+#   left_join(.,industry, by = "industry_code") %>%
+#   left_join(.,datatype, by = "data_type_code") %>%
+#   left_join(.,seasonal, by = c("seasonal" = "seasonal_code")) %>%
+#   left_join(.,footnote, by="footnote_codes") %>%
+#   as.data.table()
+# series_map
+```
+
+# Part 6 Merge mapping files
+Add mapping files to series master
+```{r}
+# intersect(colnames(series_map), colnames(series_master))
+setkey(series_map, series_id)
+setkey(series_master, series_id)
+series_master_full <- series_map[series_master]
+```
+
+# Part 7 Address footnote Codes
+Footnote codes are different in the mapping file than they are with the data. I am not going to worry about footnote codes. 
+```{r}
+series_master_full[,.N, by=c("footnote_codes", "footnote_text")]
+```
